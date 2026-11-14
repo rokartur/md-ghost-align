@@ -7,8 +7,8 @@ Aligns the columns of markdown tables in the text editor. The padding is virtual
 - Pads table cells with inlay hints, so the columns line up on screen and the file stays compact.
 - Pads the delimiter row with dashes.
 - Obeys `:---`, `---:` and `:---:` column alignment.
-- Keeps the header row on one line: when a table is wider than `editor.wordWrapColumn`, the widest columns get narrower. A column is never narrower than its header.
-- Wraps a long cell inside its column. The next visual lines start with empty columns up to that cell, and the rest of the row continues on the last line.
+- Keeps the header row on one line: when a table is wider than `editor.wordWrapColumn`, the table fills exactly `editor.wordWrapColumn` and the widest columns get narrower. A column is never narrower than its header.
+- Wraps a long cell inside its column, between words. A word longer than the column (for example a URL) is cut at the column edge. Every wrapped line shows all column borders, and the rest of the row continues on the last line of the cell.
 
 ## Settings it changes
 
@@ -25,7 +25,8 @@ Set `editor.wordWrapColumn` in `[markdown]` to change the table width. With `edi
 
 ## Limits
 
-- A word that is longer than its column (for example a long URL) pushes the rest of the row to the right.
-- Emoji count as one column, but most fonts draw them wider.
+- The leading `|` of a wrapped line is blank: VS Code does not break a line between two pipes.
+- A link underline continues under the padding inside a cut URL.
+- Tables without a leading `|` do not wrap their cells. In tables indented with tabs, wrapped lines fall off the grid.
 - Wrapped cells in right-aligned and centered columns wrap like left-aligned cells.
 - The color of the padding is the theme color `editorInlayHint.background`.

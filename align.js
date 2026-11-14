@@ -26,7 +26,9 @@ function isTableStart(lines, i) {
 function padTable(lines, from, to, maxWidth, wrapCells) {
   const rows = [];
   for (let i = from; i < to; i++) rows.push(splitCells(lines[i]));
-  const widths = fitWidths(rows, displayWidth(lines[from]), maxWidth);
+  const columns = rows[0].length;
+  const lead = displayWidth(lines[from].slice(0, rows[0][0].start));
+  const { widths, wrap } = fitWidths(rows, columns, maxWidth - lead - columns, wrapCells);
   const aligns = rows[1].map((cell) => alignment(cell.text.trim()));
 
   const pads = [];
@@ -34,14 +36,18 @@ function padTable(lines, from, to, maxWidth, wrapCells) {
     const line = from + r;
     const text = lines[line];
     const indent = text.length - text.trimStart().length;
-    const leadWidth = displayWidth(text.slice(0, cells[0].start));
-    let pos = leadWidth;
-    let cellStart = leadWidth;
-    cells.forEach((cell, col) => {
+    const rowLead = displayWidth(text.slice(0, cells[0].start));
+    // A continuation line must start with a blank, not a pipe or a space, or VS Code will not break before it.
+    const wrapRow = wrap && r > 1 && rowLead > indent;
+    let pos = rowLead;
+    let cellStart = rowLead;
+    cells.slice(0, columns).forEach((cell, col) => {
       const cellEnd = cellStart + widths[col];
-      if (wrapCells && r > 1 && cell.width > widths[col]) {
-        const blankColumns = " ".repeat(Math.max(0, leadWidth - indent)) + widths.slice(0, col).map((width) => " ".repeat(width) + "|").join("");
-        pos = wrapCell(cell, line, pos, cellStart, cellEnd, blankColumns, maxWidth, pads);
+      const wrapped = wrapRow && cell.width > widths[col];
+      if (wrapped) {
+        const fill = (x) => " ".repeat(cellEnd - x) + "|" + widths.slice(col + 1).map((width) => " ".repeat(width) + "|").join("");
+        const blank = (leading) => " ".repeat(rowLead - indent) + widths.slice(0, col).map((width) => " ".repeat(width) + "|").join("") + " ".repeat(leading);
+        pos = wrapCell(cell, line, cellStart, cellEnd, fill, blank, pads);
       } else {
         pos += cell.width;
       }
@@ -54,7 +60,8 @@ function padTable(lines, from, to, maxWidth, wrapCells) {
         pads.push({ line, character: cell.start + cell.text.indexOf("-"), text: "-".repeat(missing) });
         return;
       }
-      const before = aligns[col] === "right" ? missing : aligns[col] === "center" ? Math.floor(missing / 2) : 0;
+      const align = wrapped ? "left" : aligns[col];
+      const before = align === "right" ? missing : align === "center" ? Math.floor(missing / 2) : 0;
       if (before > 0) pads.push({ line, character: cell.start, text: " ".repeat(before) });
       if (before < missing && cell.closed) pads.push({ line, character: cell.end, text: " ".repeat(missing - before) });
     });
@@ -62,56 +69,62 @@ function padTable(lines, from, to, maxWidth, wrapCells) {
   return pads;
 }
 
-// Padding pushes the space before each overflowing word onto the wrap column, so VS Code wraps right there.
-// blankColumns must not start with "|": VS Code never wraps between a space and a pipe.
-function wrapCell(cell, line, pos, cellStart, cellEnd, blankColumns, wrapColumn, pads) {
+// Every continuation line ends with the table's right border on the wrap column, then starts with a padding blank.
+// VS Code breaks after "|" before a non-space, and inlay hint spaces render as no-break spaces, so it breaks exactly there.
+function wrapCell(cell, line, cellStart, cellEnd, fill, blank, pads) {
+  const leading = cell.text.length - cell.text.trimStart().length;
+  const limit = cellEnd - 1;
+  let x = cellStart + leading;
+  const breakAt = (character, gap) => {
+    pads.push({ line, character: cell.start + character, text: fill(x) + blank(Math.max(0, leading - gap)) });
+    x = cellStart + Math.max(leading, gap);
+  };
   const words = [...cell.text.matchAll(/\S+/g)];
-  const leading = words[0].index;
-  let x = pos + leading;
   words.forEach((word, i) => {
-    const width = displayWidth(word[0]);
-    if (i === 0) {
+    if (i > 0) {
+      const gapStart = words[i - 1].index + words[i - 1][0].length;
+      const gap = word.index - gapStart;
+      if (x + gap + displayWidth(word[0]) > limit) breakAt(gapStart, gap);
+      else x += gap;
+    }
+    let offset = word.index;
+    for (const char of word[0]) {
+      const width = displayWidth(char);
+      // A word longer than the column is cut where it reaches the column edge.
+      if (x + width > limit && x > cellStart + leading) breakAt(offset, 0);
       x += width;
-      return;
+      offset += char.length;
     }
-    const previous = words[i - 1];
-    const gap = word.index - previous.index - previous[0].length;
-    if (x + gap + width < cellEnd) {
-      x += gap + width;
-      return;
-    }
-    const lastSpace = x + gap - 1;
-    const afterBorder = wrapColumn - 2 - cellEnd;
-    const fill = lastSpace <= cellEnd && afterBorder >= 0
-      ? " ".repeat(cellEnd - lastSpace) + "|" + " ".repeat(afterBorder)
-      : " ".repeat(Math.max(0, wrapColumn - 1 - lastSpace));
-    pads.push({ line, character: cell.start + word.index - 1, text: fill });
-    pads.push({ line, character: cell.start + word.index, text: blankColumns + " ".repeat(leading) });
-    x = cellStart + leading + width;
   });
   return x + cell.text.length - cell.text.trimEnd().length;
 }
 
-// Caps the widest columns until the header row fits maxWidth, so the header never wraps.
-// A column never gets narrower than its header and delimiter cells.
-function fitWidths(rows, headerLineWidth, maxWidth) {
-  const natural = [];
-  const floor = [];
+// A table that fits gets its natural widths. A wider one fills `room` exactly, so every wrapped line ends on the wrap column;
+// the widest columns get narrower first, and a column never gets narrower than its header and delimiter cells.
+function fitWidths(rows, columns, room, wrapCells) {
+  const natural = new Array(columns).fill(0);
+  const floor = new Array(columns).fill(0);
   rows.forEach((cells, r) => {
-    cells.forEach((cell, col) => {
-      natural[col] = Math.max(natural[col] ?? 0, cell.width);
-      if (r < 2) floor[col] = Math.max(floor[col] ?? 0, cell.width);
+    cells.slice(0, columns).forEach((cell, col) => {
+      natural[col] = Math.max(natural[col], cell.width);
+      if (r < 2) floor[col] = Math.max(floor[col], cell.width);
     });
   });
-  const header = rows[0];
-  const overhead = headerLineWidth - sum(header.map((cell) => cell.width));
-  const capped = (cap) => natural.map((width, col) => Math.max(floor[col] ?? 0, Math.min(width, cap)));
+  if (sum(natural) <= room) return { widths: natural, wrap: false };
+  if (sum(floor) > room) return { widths: floor, wrap: false };
 
-  for (let cap = Math.max(...natural); cap > 0; cap--) {
-    const widths = capped(cap);
-    if (overhead + sum(widths.slice(0, header.length)) <= maxWidth) return widths;
+  let cap = Math.max(...natural);
+  const capped = () => natural.map((width, col) => Math.max(floor[col], Math.min(width, cap)));
+  while (sum(capped()) > room) cap--;
+  const widths = capped();
+  let left = room - sum(widths);
+  for (let col = 0; col < columns && left > 0; col++) {
+    if (natural[col] > widths[col]) {
+      widths[col]++;
+      left--;
+    }
   }
-  return capped(0);
+  return { widths, wrap: wrapCells };
 }
 
 function sum(numbers) {
@@ -146,12 +159,12 @@ function alignment(delimiter) {
 }
 
 // Same full-width ranges VS Code's wrapper counts as 2 columns (strings.isFullWidthCharacter).
-// shortcut: emoji count as 1 column but most fonts draw them wider, measure rendered width if tables with emoji drift.
+// VS Code also counts a surrogate pair (most emoji) as 2 columns.
 const FULL_WIDTH = /[\u2E80-\uD7AF\uF900-\uFAFF\uFF01-\uFF5E]/u;
 
 function displayWidth(text) {
   let width = 0;
-  for (const char of text) width += FULL_WIDTH.test(char) ? 2 : 1;
+  for (const char of text) width += FULL_WIDTH.test(char) || char.length === 2 ? 2 : 1;
   return width;
 }
 
