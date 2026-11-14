@@ -16,12 +16,11 @@ The extension sets these defaults for markdown files. Your own settings override
 
 | Setting | Value | Why |
 | --- | --- | --- |
-| `editor.wordWrap` | `wordWrapColumn` | Cells can wrap only at a known column. The extension API does not give the width of the editor. |
 | `editor.inlayHints.enabled` | `on` | The padding is made of inlay hints. |
 | `editor.inlayHints.maximumLength` | `0` | Without this, VS Code cuts the padding after 43 characters in a line. |
 | `editor.inlayHints.padding`, `fontSize`, `fontFamily` | editor defaults | The padding must have the width of the editor font. |
 
-Set `editor.wordWrapColumn` in `[markdown]` to change the table width. With `editor.wordWrap` set to `on`, columns still align and the header still fits `editor.wordWrapColumn`, but long cells do not wrap. With `off`, nothing wraps and columns use their full width.
+Set `editor.wordWrapColumn` in `[markdown]` to change the table width. With the markdown default `editor.wordWrap: "on"`, prose wraps at the window edge, columns align and the header fits `editor.wordWrapColumn`, but long cells do not wrap: the extension API does not give the width of the editor. To wrap long cells inside their column, set `editor.wordWrap` to `wordWrapColumn` or `bounded`; prose then wraps at `editor.wordWrapColumn` too. With `off`, nothing wraps and columns use their full width.
 
 ## Limits
 
