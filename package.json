@@ -15,6 +15,12 @@
   ],
   "main": "./extension.js",
   "contributes": {
+    "commands": [
+      {
+        "command": "mdGhostAlign.fitTables",
+        "title": "Markdown Ghost Align: Fit Tables to the Window"
+      }
+    ],
     "configurationDefaults": {
       "[markdown]": {
         "editor.inlayHints.enabled": "on",
