@@ -8,7 +8,7 @@ Aligns the columns of markdown tables in the text editor. The padding is virtual
 - Pads the delimiter row with dashes.
 - Obeys `:---`, `---:` and `:---:` column alignment.
 - Keeps the header row on one line: when a table is wider than `editor.wordWrapColumn`, the table fills exactly `editor.wordWrapColumn` and the widest columns get narrower. A column is never narrower than its header.
-- Draws a row with a long cell as a grid: each cell wraps inside its column, between words, and all cells start on the first line of the row. A word longer than the column (for example a URL) is cut at the column edge. The grid is the real text of the row, moved on screen, so it keeps its markdown colors.
+- With `editor.wordWrap` set to `bounded` or `wordWrapColumn`, draws a row with a long cell as a grid: each cell wraps inside its column, between words, and all cells start on the first line of the row. A word longer than the column (for example a URL) is cut at the column edge. The grid is the real text of the row, moved on screen, so it keeps its markdown colors.
 - Keeps the text of the rows the cursor or selection is on in file order, so you can edit them. There, a long cell wraps in place and the rest of the row continues on the last line of the cell.
 
 ## Settings it changes
@@ -17,12 +17,11 @@ The extension sets these defaults for markdown files. Your own settings override
 
 | Setting | Value | Why |
 | --- | --- | --- |
-| `editor.wordWrap` | `bounded` | Cells can wrap only at a known column, and the extension API does not give the width of the editor. Lines wrap at `editor.wordWrapColumn` or at the window edge, whichever comes first. |
 | `editor.inlayHints.enabled` | `on` | The padding is made of inlay hints. |
 | `editor.inlayHints.maximumLength` | `0` | Without this, VS Code cuts the padding after 43 characters in a line. |
 | `editor.inlayHints.padding`, `fontSize`, `fontFamily` | editor defaults | The padding must have the width of the editor font. |
 
-Set `editor.wordWrapColumn` in `[markdown]` to change the table width. Long cells wrap inside their column when the window is at least `editor.wordWrapColumn` wide. With `editor.wordWrap: "on"`, prose wraps at the window edge, columns align and the header fits `editor.wordWrapColumn`, but long cells do not wrap. With `off`, nothing wraps and columns use their full width.
+Set `editor.wordWrapColumn` in `[markdown]` to change the table width. With the markdown default `editor.wordWrap: "on"`, prose wraps at the window edge, columns align and the header fits `editor.wordWrapColumn`, but long cells do not wrap and no row is a grid: the extension API does not give the width of the editor. To get the grid, set `editor.wordWrap` to `bounded` (lines wrap at `editor.wordWrapColumn` or at the window edge, whichever comes first) or `wordWrapColumn`; prose then wraps at `editor.wordWrapColumn` too. With `off`, nothing wraps and columns use their full width.
 
 ## Limits
 
