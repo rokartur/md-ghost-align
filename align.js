@@ -2,12 +2,17 @@ const DELIMITER_ROW = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 const FENCE = /^\s*(```|~~~)/;
 // Stands in for the leading pipe of a wrapped line: VS Code does not break a line between two pipes.
 const GHOST_PIPE = "\u2502";
+// The ASCII part of VS Code's editor.wordWrapBreakAfterCharacters and wordWrapBreakBeforeCharacters, hidden options.
+const BREAK_AFTER = " \t})]?|/&.,;";
+const BREAK_BEFORE = "([{+";
 
 // `pads` are virtual text to insert. `moves` shift real text by `dx` columns and `dy` lines on screen.
-// `rawRows` are the lines whose text stays where the editor puts it (the rows under a cursor), so they can be edited.
+// `cursors` shift a cursor between offsets `start` and `end` of a line, on top of where VS Code draws it, to the moved text.
+// `rawRows` are the lines whose text stays where the editor puts it (the rows under a selection).
 function ghostLayout(lines, maxWidth = Infinity, wrapCells = false, rawRows = new Set()) {
   const pads = [];
   const moves = [];
+  const cursors = [];
   let inFence = false;
   for (let i = 0; i < lines.length; i++) {
     if (FENCE.test(lines[i])) {
@@ -20,9 +25,10 @@ function ghostLayout(lines, maxWidth = Infinity, wrapCells = false, rawRows = ne
     const table = padTable(lines, i, end, maxWidth, wrapCells, rawRows);
     pads.push(...table.pads);
     moves.push(...table.moves);
+    cursors.push(...table.cursors);
     i = end - 1;
   }
-  return { pads, moves };
+  return { pads, moves, cursors };
 }
 
 function isTableStart(lines, i) {
@@ -40,6 +46,7 @@ function padTable(lines, from, to, maxWidth, wrapCells, rawRows) {
 
   const pads = [];
   const moves = [];
+  const cursors = [];
   rows.forEach((cells, r) => {
     const line = from + r;
     const text = lines[line];
@@ -54,6 +61,7 @@ function padTable(lines, from, to, maxWidth, wrapCells, rawRows) {
       if (grid) {
         pads.push(...grid.pads);
         moves.push(...grid.moves);
+        cursors.push(...grid.cursors);
         return;
       }
     }
@@ -84,15 +92,24 @@ function padTable(lines, from, to, maxWidth, wrapCells, rawRows) {
       if (before < missing && cell.closed) pads.push({ line, character: cell.end, text: " ".repeat(missing - before) });
     });
   });
-  return { pads, moves };
+  return { pads, moves, cursors };
 }
 
 // The text of a row stays in file order, so its cell parts are poured into the grid's slots in reading order,
 // each into the next slot wide enough. A move then shifts a part to its own column and line.
-// Hints fill the slots and draw the borders. Null when a part does not fit its own column.
+// Hints fill the slots and draw the borders. Null when a part does not fit any slot.
 function gridRow(cells, widths, aligns, rowLead, line) {
   const pads = [];
   const moves = [];
+  const cursors = [];
+  const shiftCursor = (offset, dx, dy) => {
+    if (dx === 0 && dy === 0) return;
+    const last = cursors.at(-1);
+    if (last && last.end === offset - 1 && last.dx === dx && last.dy === dy) last.end = offset;
+    else cursors.push({ line, start: offset, end: offset, dx, dy });
+  };
+  // Where VS Code draws a cursor that is at the offset of a hint: after the character before, as if nothing was moved.
+  let beforeHint = { x: 0, y: 0 };
   const origins = [];
   let x = rowLead;
   for (const width of widths) {
@@ -103,11 +120,12 @@ function gridRow(cells, widths, aligns, rowLead, line) {
   let slotLine = 0;
   let pending = "";
   const flush = (character) => {
-    if (!pending) return;
+    if (!pending) return false;
     const last = pads.at(-1);
     if (last && last.character === character) last.text += pending;
     else pads.push({ line, character, text: pending });
     pending = "";
+    return true;
   };
   const openSlot = () => {
     if (slot === 0 && slotLine > 0) pending += GHOST_PIPE;
@@ -124,6 +142,7 @@ function gridRow(cells, widths, aligns, rowLead, line) {
     closeSlot();
   };
 
+  const widest = Math.max(...widths);
   let height = 1;
   for (const [col, cell] of cells.entries()) {
     const margin = widths[col] > 2 ? 1 : 0;
@@ -133,17 +152,34 @@ function gridRow(cells, widths, aligns, rowLead, line) {
     // An empty cell is one part of no width: its spaces and its pipe still take a slot.
     const parts = wrapped.length > 0 ? wrapped : [{ start: cell.end, end: cell.end, width: 0 }];
     let from = cell.start;
+    let homeEnd = 0;
     for (const [i, part] of parts.entries()) {
       const last = i === parts.length - 1;
       const spaceBefore = part.start - from;
       const need = spaceBefore + part.width + (last ? cell.end - part.end : 0);
-      if (need > widths[col]) return null;
+      // Spaces around a part may not fit its own column; they stay in a wider slot while the move takes the text home.
+      if (need > widest) return null;
       while (widths[slot] < need) blankSlot();
       openSlot();
-      flush(from);
-      const dx = origins[col] + margin + alignOffset(inner - part.width, aligns[col]) - (origins[slot] + spaceBefore);
+      const hinted = flush(from);
+      const slotX = origins[slot];
+      const home = origins[col] + margin + alignOffset(inner - part.width, aligns[col]);
+      const dx = home - (slotX + spaceBefore);
       const dy = i - slotLine;
       if (part.width > 0 && (dx !== 0 || dy !== 0)) moves.push({ line, start: part.start, end: part.end, dx, dy });
+      for (let offset = from; offset <= (last ? cell.end : part.end - 1); offset++) {
+        // The spaces before a part: those that begin the cell go with its text, those at a line break stay after the part before.
+        let shift = i === 0 ? { dx, dy } : { dx: homeEnd - slotX, dy: dy - 1 };
+        // VS Code reads the place of a cursor from the drawn text, so on moved text it is off by `dy` only.
+        if (offset >= part.start) shift = offset < part.end ? { dx: 0, dy } : { dx, dy };
+        if (offset === from && hinted) {
+          const wanted = from < part.start ? { x: slotX + shift.dx, y: slotLine + shift.dy } : { x: home, y: i };
+          shift = { dx: wanted.x - beforeHint.x, dy: wanted.y - beforeHint.y };
+        }
+        shiftCursor(offset, shift.dx, shift.dy);
+      }
+      beforeHint = { x: last ? slotX + widths[slot] + 1 : slotX + need, y: slotLine };
+      homeEnd = home + part.width;
       pending = " ".repeat(widths[slot] - need);
       // The pipe that ends the cell is the border of the slot of its last part.
       if (last) flush(cell.end);
@@ -153,8 +189,10 @@ function gridRow(cells, widths, aligns, rowLead, line) {
     }
   }
   while (slot !== 0 || slotLine < height) blankSlot();
+  // A cursor at the end of the line goes to the end of the first line of the row.
   flush(cells.at(-1).end + 1);
-  return { pads, moves };
+  shiftCursor(cells.at(-1).end + 1, x - beforeHint.x, -beforeHint.y);
+  return { pads, moves, cursors };
 }
 
 // Parts of a cell's text, each at most `width` wide, cut between words.
@@ -192,7 +230,7 @@ function alignOffset(missing, align) {
   return 0;
 }
 
-// A row under a cursor wraps in place, so each cell starts on the last line of the cell before it.
+// A row under a selection wraps in place, so each cell starts on the last line of the cell before it.
 // Every continuation line ends with the table's right border on the wrap column, then starts with GHOST_PIPE.
 // VS Code breaks after "|" before a non-space, and inlay hint spaces render as no-break spaces, so it breaks exactly there.
 function wrapCell(cell, line, cellStart, cellEnd, fill, blank, pads) {
@@ -235,7 +273,8 @@ function fitWidths(rows, columns, room, wrapCells) {
     });
   });
   if (sum(natural) <= room) return { widths: natural, wrap: false };
-  if (sum(floor) > room) return { widths: floor, wrap: false };
+  // The header cannot fit, so no column is capped: capped columns would only push every long cell off the grid.
+  if (sum(floor) > room) return { widths: natural, wrap: false };
 
   let cap = Math.max(...natural);
   const capped = () => natural.map((width, col) => Math.max(floor[col], Math.min(width, cap)));
@@ -292,4 +331,55 @@ function displayWidth(text) {
   return width;
 }
 
-module.exports = { ghostLayout };
+// What VS Code's own break of `text` says about its wrap column: a visual line runs from offset `start` to `end`.
+// Only for text `canProbe` accepts. Rules from monospaceLineBreaksComputer: spaces do not hang past the column,
+// and a line breaks at its last break opportunity, or at the column when it has none.
+function wrapColumnBounds(text, start, end) {
+  if (end >= text.length) return { min: text.length - start, max: Infinity };
+  if (!canBreak(text, end)) return { min: end - start, max: end - start };
+  let next = end + 1;
+  while (next < text.length && !canBreak(text, next)) next++;
+  // Had the text up to the next opportunity fit, the line would break there.
+  return { min: end - start, max: next - 1 - start };
+}
+
+function canBreak(text, i) {
+  return (
+    text[i] !== " " &&
+    ((BREAK_AFTER.includes(text[i - 1]) && !BREAK_AFTER.includes(text[i])) ||
+      (!BREAK_BEFORE.includes(text[i - 1]) && BREAK_BEFORE.includes(text[i])))
+  );
+}
+
+// Lines `wrapColumnBounds` can read: no indentation, and only characters 1 column wide that break by the ASCII rules.
+// shortcut: ASCII, Latin letters and dashes only, so a line with typographic quotes, CJK or emoji is skipped; add their break classes when such documents fail to measure.
+const PROBE_LINE = /^[!-~\u00C0-\u024F][ -~\u00C0-\u024F\u2013\u2014\u2026]*$/;
+
+function canProbe(text) {
+  return PROBE_LINE.test(text) && !text.includes("\\");
+}
+
+// `shown` is a line as VS Code wraps it: its hints (`pads`) in place, their spaces as the no-break spaces VS Code draws.
+// `place` is where in `shown` a break at `offset` of the real text is; undefined when the hints there can hold it at more than one place.
+function shownBreak(text, pads, offset) {
+  let shown = "";
+  let from = 0;
+  let to = 0;
+  for (let i = 0; i <= text.length; i++) {
+    if (i === offset) from = shown.length;
+    for (const pad of pads) {
+      if (pad.character === i) shown += pad.text.replaceAll(" ", "\u00a0");
+    }
+    if (i === offset) to = shown.length;
+    shown += text[i] ?? "";
+  }
+  if (offset >= text.length) return { shown, place: shown.length };
+  if (from === to) return { shown, place: from };
+  const places = [];
+  for (let i = from; i <= to; i++) {
+    if (canBreak(shown, i)) places.push(i);
+  }
+  return { shown, place: places.length === 1 ? places[0] : undefined };
+}
+
+module.exports = { ghostLayout, wrapColumnBounds, canProbe, shownBreak };

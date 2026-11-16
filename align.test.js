@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { ghostLayout } = require("./align");
+const { ghostLayout, wrapColumnBounds, canProbe, shownBreak } = require("./align");
 
 const pads = (text) => ghostLayout(text.split("\n")).pads;
 
@@ -93,8 +93,8 @@ function wrapLikeVSCode(text, column) {
 }
 
 // What the editor shows: each line with its hints, wrapped, then every move applied. Only for characters 1 column wide.
-function screen(lines, column, rawRows) {
-  const { pads, moves } = ghostLayout(lines, column, true, rawRows);
+function screen(lines, column, rawRows, cursorPlaces) {
+  const { pads, moves, cursors } = ghostLayout(lines, column, true, rawRows);
   return lines.flatMap((line, i) => {
     const chars = line.split("").map((char, offset) => ({ char, offset }));
     const here = pads.filter((pad) => pad.line === i).sort((a, b) => b.character - a.character);
@@ -107,6 +107,19 @@ function screen(lines, column, rawRows) {
     visual.forEach((row, y) => {
       for (let x = y ? indent : 0; x < row.length; x++) placeOf.set(chars[k++].offset, [y, x]);
     });
+    // Measured in VS Code 1.146: a cursor is drawn at the left edge of its character, a moved one included, but on the line
+    // the character had before the move. At the offset of a hint it is drawn after the unmoved character before.
+    const cursorPlace = (offset) => {
+      const shift = cursors.find((c) => c.line === i && c.start <= offset && offset <= c.end) ?? { dx: 0, dy: 0 };
+      if (here.some((pad) => pad.character === offset) && offset > 0) {
+        const [y, x] = placeOf.get(offset - 1);
+        return [y + shift.dy, x + 1 + shift.dx];
+      }
+      const [y, x] = placeOf.get(offset);
+      const drawn = moves.find((move) => move.line === i && move.start <= offset && offset < move.end) ?? { dx: 0 };
+      return [y + shift.dy, x + drawn.dx + shift.dx];
+    };
+    cursorPlaces?.push(line.split("").map((_, offset) => cursorPlace(offset)));
     const moved = moves.filter((move) => move.line === i);
     const offsets = (move) => Array.from({ length: move.end - move.start }, (_, n) => move.start + n);
     for (const move of moved) {
@@ -120,6 +133,13 @@ function screen(lines, column, rawRows) {
         const [y, x] = placeOf.get(offset);
         assert.equal(rows[y + move.dy][x + move.dx], " ", `${line[offset]} lands on text`);
         rows[y + move.dy][x + move.dx] = line[offset];
+      }
+    }
+    if (moved.length > 0) {
+      for (const [offset, char] of [...line].entries()) {
+        if (char === " " || char === "|") continue;
+        const [y, x] = cursorPlace(offset);
+        assert.equal(rows[y][x], char, `cursor at offset ${offset} of ${line}`);
       }
     }
     return rows.map((row) => row.join(""));
@@ -142,6 +162,12 @@ test("a row with a long cell is a grid of its real text: every cell starts on th
     "| x        | 6 |",
   ]);
   assert.deepEqual(ghostLayout(lines, 16, true).moves, [{ line: 2, start: 23, end: 24, dx: 0, dy: -2 }]);
+  const cursorPlaces = [];
+  screen(lines, 16, undefined, cursorPlaces);
+  const at = (y, from, count) => Array.from({ length: count }, (_, n) => [y, from + n]);
+  // "| one two" and the place after it, "three" and after it, "four " and before its pipe, then " 5 " and before its pipe.
+  assert.deepEqual(cursorPlaces[2].slice(0, 26), [...at(0, 0, 10), ...at(1, 2, 6), ...at(2, 2, 6), ...at(0, 12, 4)]);
+  assert.ok(ghostLayout(lines, 16, true).cursors.every((cursor) => cursor.line === 2));
   const extraCell = [...lines.slice(0, 2), "| one two three four | 5 | not in the header |"];
   assert.deepEqual(ghostLayout(extraCell, 16, true).moves, []);
   const longLastCell = [...lines.slice(0, 2), "| 5 | one two three four |"];
@@ -159,7 +185,17 @@ test("grid cells move sideways into their own column, aligned as the delimiter r
   ]);
 });
 
-test("a row under a cursor wraps in place and every column border stays on the grid", () => {
+test("a cell whose trailing spaces outgrow its capped column still moves into the grid", () => {
+  const lines = ["| a | bbbbbbbbbb |", "|---|---|", "| x          | one two three four |"];
+  assert.deepEqual(screen(lines, 25), [
+    "| a        | bbbbbbbbbb |",
+    "|----------|------------|",
+    "| x        | one two    |",
+    "\u2502          | three four |",
+  ]);
+});
+
+test("a row under a selection wraps in place and every column border stays on the grid", () => {
   const lines = [
     "| # | Co| Sklep|Cena |Status| Uwagi |",
     "|---|---|---|---:|---|---|",
@@ -176,6 +212,76 @@ test("a row under a cursor wraps in place and every column border stays on the g
     assert.equal(line.length, 60, line);
     for (const b of borders) assert.equal(line[b], "|", line);
   }
+});
+
+test("a header wider than the limit still aligns every column to its widest cell", () => {
+  assert.deepEqual(ghostLayout(["| aaaa | bbbb |", "|---|---|", "| c | dddddd |"], 10).pads, [
+    { line: 0, character: 14, text: "  " },
+    { line: 1, character: 1, text: "---" },
+    { line: 1, character: 5, text: "-----" },
+    { line: 2, character: 4, text: "   " },
+  ]);
+});
+
+test("the line breaks of a prose paragraph bound the wrap column, and a few paragraphs pin it", () => {
+  const words = ["a", "to", "the", "wrap", "column", "(note)", "x+y", "path/to/file", "end.", "averyveryverylongword"];
+  let seed = 7;
+  const random = (n) => (seed = (seed * 48271) % 2147483647) % n;
+  let pinned = 0;
+  for (let column = 20; column <= 120; column++) {
+    let min = 0;
+    let max = Infinity;
+    for (let n = 0; n < 3; n++) {
+      const text = Array.from({ length: 60 }, () => words[random(words.length)]).join(" ");
+      let start = 0;
+      for (const visual of wrapLikeVSCode(text, column)) {
+        const end = start + visual.length;
+        const bounds = wrapColumnBounds(text, start, end);
+        assert.ok(bounds.min <= column && column <= bounds.max, `${column} outside ${bounds.min}..${bounds.max}`);
+        min = Math.max(min, bounds.min);
+        max = Math.min(max, bounds.max);
+        start = end;
+      }
+    }
+    if (min === max) pinned++;
+  }
+  assert.ok(pinned > 95, `${pinned} of 101 columns pinned`);
+  assert.deepEqual(wrapColumnBounds("short line", 0, 10), { min: 10, max: Infinity });
+});
+
+test("a table row bounds the wrap column through its padding, and no row bounds it wrong", () => {
+  assert.ok(canProbe("Żółta łódź – próba…") && canProbe("| a | b |"));
+  assert.ok(!canProbe("  indented") && !canProbe("emoji 🚗") && !canProbe("a\\|b"));
+  const lines = [
+    "| # | Co | Sklep | Uwagi |",
+    "|---|---|---|---|",
+    "| 1 | Carlinkit Mini Ultra 3, czarny (GTIN 6972185561017) | Media Expert | MFi + Wi-Fi + Bluetooth. LIVI Link wspiera v821b; provision sprawdza układ. |",
+    "| 9 | Płytka z 4 transoptorami PC817 | nie wybrano | Musi działać z podciągnięciem do 3,3 V po stronie Pi. |",
+    "| 3 | microSD | nie wybrano | OK |",
+  ];
+  const read = { padded: 0, grid: 0 };
+  for (let column = 40; column <= 120; column++) {
+    for (const state of ["padded", "grid"]) {
+      const { pads } = state === "grid" ? ghostLayout(lines, column, true) : ghostLayout(lines, 80);
+      lines.forEach((text, line) => {
+        const here = pads.filter((pad) => pad.line === line);
+        const { shown } = shownBreak(text, here, Infinity);
+        const first = wrapLikeVSCode(shown, column)[0];
+        if (first.length === shown.length) return;
+        // The cursor reports a break as an offset of the real text: the count of real characters before it.
+        const real = [...text].map(() => true);
+        for (const pad of here.toSorted((a, b) => b.character - a.character)) real.splice(pad.character, 0, ...[...pad.text].map(() => false));
+        const offset = real.slice(0, first.length).filter(Boolean).length;
+        const { place } = shownBreak(text, here, offset);
+        if (place === undefined) return;
+        assert.equal(place, first.length, `${state} ${column}: ${text}`);
+        const bounds = wrapColumnBounds(shown, 0, place);
+        assert.ok(bounds.min <= column && column <= bounds.max, `${state} ${column} outside ${bounds.min}..${bounds.max}`);
+        read[state]++;
+      });
+    }
+  }
+  assert.ok(read.padded > 200, `${read.padded} padded rows read`);
 });
 
 test("a table that fits keeps its natural widths and never wraps", () => {

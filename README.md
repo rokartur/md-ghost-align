@@ -7,9 +7,9 @@ Aligns the columns of markdown tables in the text editor. The padding is virtual
 - Pads table cells with inlay hints, so the columns line up on screen and the file stays compact.
 - Pads the delimiter row with dashes.
 - Obeys `:---`, `---:` and `:---:` column alignment.
-- Keeps the header row on one line: when a table is wider than `editor.wordWrapColumn`, the table fills exactly `editor.wordWrapColumn` and the widest columns get narrower. A column is never narrower than its header.
-- With `editor.wordWrap` set to `bounded` or `wordWrapColumn`, draws a row with a long cell as a grid: each cell wraps inside its column, between words, and all cells start on the first line of the row. A word longer than the column (for example a URL) is cut at the column edge. The grid is the real text of the row, moved on screen, so it keeps its markdown colors.
-- Keeps the text of the rows the cursor or selection is on in file order, so you can edit them. There, a long cell wraps in place and the rest of the row continues on the last line of the cell.
+- Fits a wide table to the window: the table fills exactly the wrap column and the widest columns get narrower. A column is never narrower than its header. When the header is wider than the window, columns keep their full width.
+- Draws a row with a long cell as a grid: each cell wraps inside its column, between words, and all cells start on the first line of the row. A word longer than the column (for example a URL) is cut at the column edge. The grid is the real text of the row, moved on screen, so it keeps its markdown colors.
+- Keeps the grid while you edit: the cursor is drawn where its text is on screen. Only the rows under a selection or under more than one cursor show their text in file order. There, a long cell wraps in place and the rest of the row continues on the last line of the cell.
 
 ## Settings it changes
 
@@ -21,7 +21,9 @@ The extension sets these defaults for markdown files. Your own settings override
 | `editor.inlayHints.maximumLength` | `0` | Without this, VS Code cuts the padding after 43 characters in a line. |
 | `editor.inlayHints.padding`, `fontSize`, `fontFamily` | editor defaults | The padding must have the width of the editor font. |
 
-Set `editor.wordWrapColumn` in `[markdown]` to change the table width. With the markdown default `editor.wordWrap: "on"`, prose wraps at the window edge, columns align and the header fits `editor.wordWrapColumn`, but long cells do not wrap and no row is a grid: the extension API does not give the width of the editor. To get the grid, set `editor.wordWrap` to `bounded` (lines wrap at `editor.wordWrapColumn` or at the window edge, whichever comes first) or `wordWrapColumn`; prose then wraps at `editor.wordWrapColumn` too. With `off`, nothing wraps and columns use their full width.
+With the markdown default `editor.wordWrap: "on"`, prose and tables wrap at the window edge. The extension API does not give the width of the editor, so the extension measures it: half a second after you stop scrolling or typing, it moves the cursor along the longest prose lines in view, reads where VS Code broke them, and puts the cursor back. The table fits the window when a prose paragraph in view wraps; otherwise it fits `editor.wordWrapColumn` and no row is a grid. The measurement needs `editor.wrappingStrategy: "simple"` and `editor.wrappingIndent` `none` or `same`, and reads only lines of ASCII and Latin letters (Polish included) that do not start with a space and have no backslash.
+
+With `editor.wordWrap` set to `bounded` or `wordWrapColumn`, tables fit `editor.wordWrapColumn` (or the window edge under `bounded`, whichever comes first) and nothing is measured. With `off`, nothing wraps and columns use their full width.
 
 ## Limits
 
@@ -30,5 +32,7 @@ Set `editor.wordWrapColumn` in `[markdown]` to change the table width. With the 
 - The leading `|` of a wrapped line is the box-drawing character `│`: VS Code does not break a line between two pipes.
 - The underline of a link and the line through struck text continue under the padding inside a cut URL or phrase.
 - Tables without a leading `|` do not wrap their cells. In tables indented with tabs, wrapped lines fall off the grid.
-- In a row under the cursor, wrapped cells in right-aligned and centered columns wrap like left-aligned cells.
+- In a row under a selection, wrapped cells in right-aligned and centered columns wrap like left-aligned cells.
+- In a grid row, only the cursor is moved to its text. The suggestion list, the IME box and other widgets open where the text is in the line. The cursor is moved with CSS on VS Code's own cursor element (measured in VS Code 1.146), so a VS Code update can break it: the cursor is then drawn where the text is in the line.
 - The color of the padding is the theme color `editorInlayHint.background`.
+- The measurement moves the cursor for a moment, so an extension that reacts to cursor moves can see it. A window resize is measured when you next scroll or switch editors.
