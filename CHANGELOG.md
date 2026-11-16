@@ -1,5 +1,11 @@
 # Change Log
 
+## 0.2.2
+- Fit tables to the window under `editor.wordWrap: "on"`: the extension measures the wrap column from where VS Code breaks prose lines in view, and rows with a long cell become a grid again.
+- Keep the grid in the row you edit: the cursor is drawn at its text in the grid. Rows under a selection or under more than one cursor still show their text in file order.
+- Fix a table whose header is wider than the limit: its columns now align at full width, where they got no padding.
+- Fix a grid row that broke off the grid when a cell had more trailing spaces than its column is wide.
+
 ## 0.2.1
 - Stop setting `editor.wordWrap` to `bounded` for markdown, so prose wraps at the window edge again. Rows with a long cell are drawn as a grid only when you set `editor.wordWrap` to `bounded` or `wordWrapColumn`.
 
