@@ -1,8 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { ghostPads } = require("./align");
+const { ghostLayout } = require("./align");
 
-const pads = (text) => ghostPads(text.split("\n"));
+const pads = (text) => ghostLayout(text.split("\n")).pads;
 
 test("pads short cells before the closing pipe and the delimiter row with dashes", () => {
   assert.deepEqual(pads("| a | bbbb |\n|---|---|\n| ccc | d |"), [
@@ -42,13 +42,13 @@ test("unclosed last cell gets no trailing pad", () => {
 
 test("caps a long column so the header fits the limit, the overflowing row gets realigned by later slack", () => {
   const lines = ["| a | b | c |", "|---|---|---|", "| xxxxxxxxxx | y | z |", "| q | r | s |"];
-  assert.deepEqual(ghostPads(lines, 16), [
+  assert.deepEqual(ghostLayout(lines, 16).pads, [
     { line: 0, character: 4, text: "   " },
     { line: 1, character: 1, text: "---" },
     { line: 3, character: 4, text: "   " },
   ]);
   const realigned = ["| a | bbbbbbbb |", "|---|---|", "| xxxxx | y |"];
-  assert.deepEqual(ghostPads(realigned, 16), [
+  assert.deepEqual(ghostLayout(realigned, 16).pads, [
     { line: 1, character: 5, text: "-------" },
     { line: 2, character: 12, text: "   " },
   ]);
@@ -92,17 +92,74 @@ function wrapLikeVSCode(text, column) {
   return visual;
 }
 
-function render(lines, column) {
-  const pads = ghostPads(lines, column, true);
+// What the editor shows: each line with its hints, wrapped, then every move applied. Only for characters 1 column wide.
+function screen(lines, column, rawRows) {
+  const { pads, moves } = ghostLayout(lines, column, true, rawRows);
   return lines.flatMap((line, i) => {
-    let text = line;
+    const chars = line.split("").map((char, offset) => ({ char, offset }));
     const here = pads.filter((pad) => pad.line === i).sort((a, b) => b.character - a.character);
-    for (const pad of here) text = text.slice(0, pad.character) + pad.text.replaceAll(" ", "\u00a0") + text.slice(pad.character);
-    return wrapLikeVSCode(text, column).map((visual) => visual.replaceAll("\u00a0", " "));
+    for (const pad of here) chars.splice(pad.character, 0, ...[...pad.text.replaceAll(" ", "\u00a0")].map((char) => ({ char })));
+    const visual = wrapLikeVSCode(chars.map((c) => c.char).join(""), column);
+    const rows = visual.map((row) => [...row.replaceAll("\u00a0", " ")]);
+    const indent = line.match(/^[ \t]*/)[0].length;
+    const placeOf = new Map();
+    let k = 0;
+    visual.forEach((row, y) => {
+      for (let x = y ? indent : 0; x < row.length; x++) placeOf.set(chars[k++].offset, [y, x]);
+    });
+    const moved = moves.filter((move) => move.line === i);
+    const offsets = (move) => Array.from({ length: move.end - move.start }, (_, n) => move.start + n);
+    for (const move of moved) {
+      for (const offset of offsets(move)) {
+        const [y, x] = placeOf.get(offset);
+        rows[y][x] = " ";
+      }
+    }
+    for (const move of moved) {
+      for (const offset of offsets(move)) {
+        const [y, x] = placeOf.get(offset);
+        assert.equal(rows[y + move.dy][x + move.dx], " ", `${line[offset]} lands on text`);
+        rows[y + move.dy][x + move.dx] = line[offset];
+      }
+    }
+    return rows.map((row) => row.join(""));
   });
 }
 
-test("long cells wrap inside their column and every column border stays on the grid", () => {
+function render(lines, column, rawRows) {
+  assert.deepEqual(ghostLayout(lines, column, true, rawRows).moves, []);
+  return screen(lines, column, rawRows);
+}
+
+test("a row with a long cell is a grid of its real text: every cell starts on the first line of the row", () => {
+  const lines = ["| a | b |", "|---|--:|", "| one two three four | 5 |", "| x | 6 |"];
+  assert.deepEqual(screen(lines, 16), [
+    "| a        | b |",
+    "|----------|--:|",
+    "| one two  | 5 |",
+    "\u2502 three    |   |",
+    "\u2502 four     |   |",
+    "| x        | 6 |",
+  ]);
+  assert.deepEqual(ghostLayout(lines, 16, true).moves, [{ line: 2, start: 23, end: 24, dx: 0, dy: -2 }]);
+  const extraCell = [...lines.slice(0, 2), "| one two three four | 5 | not in the header |"];
+  assert.deepEqual(ghostLayout(extraCell, 16, true).moves, []);
+  const longLastCell = [...lines.slice(0, 2), "| 5 | one two three four |"];
+  assert.deepEqual(ghostLayout(longLastCell, 16, true).moves, []);
+});
+
+test("grid cells move sideways into their own column, aligned as the delimiter row says", () => {
+  const lines = ["| a | b | c | d |", "|---|--:|:-:|---|", "| x | one two three | alpha beta gamma | [z](u) |"];
+  assert.deepEqual(screen(lines, 30), [
+    "| a |      b |   c   | d     |",
+    "|---|-------:|:-----:|-------|",
+    "| x |    one | alpha | [z](u |",
+    "\u2502   |    two | beta  | )     |",
+    "\u2502   |  three | gamma |       |",
+  ]);
+});
+
+test("a row under a cursor wraps in place and every column border stays on the grid", () => {
   const lines = [
     "| # | Co| Sklep|Cena |Status| Uwagi |",
     "|---|---|---|---:|---|---|",
@@ -110,7 +167,8 @@ test("long cells wrap inside their column and every column border stays on the g
     "| 9 | Płytka z 4 transoptorami PC817 | nie wybrano | około 10 zł (szacunek) | do kupienia | Musi działać z podciągnięciem do 3,3 V 🚗 po stronie Pi. |",
     "| 3 | microSD | nie wybrano | 30 zł | mam | OK |",
   ];
-  const visual = render(lines, 60);
+  const cursor = new Set([2, 3, 4]);
+  const visual = render(lines, 60, cursor);
   const borders = [...visual[0]].flatMap((c, i) => (c === "|" && i > 0 ? [i] : []));
   assert.equal(visual[0].length, 60);
   assert.ok(visual.length > 20);
