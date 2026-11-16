@@ -2,10 +2,10 @@
   "name": "md-ghost-align",
   "displayName": "Markdown Ghost Align",
   "description": "Aligns markdown table columns on screen with virtual padding, without writing spaces to the file.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "publisher": "rokartur",
   "engines": {
-    "vscode": "^1.80.0"
+    "vscode": "^1.82.0"
   },
   "categories": [
     "Formatters"
@@ -17,6 +17,7 @@
   "contributes": {
     "configurationDefaults": {
       "[markdown]": {
+        "editor.wordWrap": "bounded",
         "editor.inlayHints.enabled": "on",
         "editor.inlayHints.maximumLength": 0,
         "editor.inlayHints.padding": false,
