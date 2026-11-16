@@ -2,6 +2,8 @@
 
 ## 0.2.2
 - Fit tables to the window under `editor.wordWrap: "on"`: the extension measures the wrap column from where VS Code breaks prose lines in view, and rows with a long cell become a grid again.
+- Fix a table that fits the window but was cut to the longest line in view, so its long cells pushed their rows off the columns.
+- Add the command `Markdown Ghost Align: Fit Tables to the Window`, which measures the editor width again. The same happens when you split or close an editor group, or come back to the window.
 - Keep the grid in the row you edit: the cursor is drawn at its text in the grid. Rows under a selection or under more than one cursor still show their text in file order.
 - Fix a table whose header is wider than the limit: its columns now align at full width, where they got no padding.
 - Fix a grid row that broke off the grid when a cell had more trailing spaces than its column is wide.

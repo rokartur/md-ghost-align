@@ -11,6 +11,8 @@ function activate(context) {
   const wrapColumns = new Map();
   let probeTimer;
   let probing = false;
+  // Set when the editor may have a new width: the next probe then drops the bounds it has.
+  let remeasure = false;
 
   const layoutOf = (document) => {
     const editor = vscode.workspace.getConfiguration("editor", document);
@@ -19,9 +21,10 @@ function activate(context) {
     let maxWidth = wordWrap === "off" ? Infinity : editor.get("wordWrapColumn");
     // A grid needs the exact wrap column: each continuation line must end on it.
     const exact = measured !== undefined && measured.min === measured.max;
-    // Without a break seen, `min` is only the longest line, so it can raise the width but not lower it.
+    // Without a break seen the window may be wider than any line, so the table takes its full width: capped at the
+    // longest line, all its rows are that long, none wraps, and no probe can learn more. Rows that wrap give the bounds.
     // Between two bounds the table takes the middle: the next probe sees if its rows wrap there, which halves the range.
-    if (measured) maxWidth = measured.max === Infinity ? Math.max(maxWidth, measured.min) : Math.ceil((measured.min + measured.max) / 2);
+    if (measured) maxWidth = measured.max === Infinity ? Infinity : Math.ceil((measured.min + measured.max) / 2);
     const wrapCells = wordWrap === "wordWrapColumn" || wordWrap === "bounded" || exact;
     const lines = document.getText().split(/\r?\n/);
     // A grid row is real text moved into slots that hints make, so with hints off no row is a grid.
@@ -83,13 +86,15 @@ function activate(context) {
     } finally {
       probing = false;
     }
-    if (!seen) return;
     const key = editor.document.uri.toString();
-    const old = wrapColumns.get(key) ?? { min: 0, max: Infinity };
+    const known = wrapColumns.get(key) ?? { min: 0, max: Infinity };
+    if (!seen) return;
+    const old = remeasure ? { min: 0, max: Infinity } : known;
+    remeasure = false;
     // Breaks seen in other views still hold, until the new ones contradict them: then the editor has a new width.
     let bounds = { min: Math.max(old.min, seen.min), max: Math.min(old.max, seen.max) };
     if (bounds.min > bounds.max) bounds = seen;
-    if (old.min === bounds.min && old.max === bounds.max) return;
+    if (known.min === bounds.min && known.max === bounds.max) return;
     wrapColumns.set(key, bounds);
     refresh();
     // The new padding changes where table rows break: those breaks narrow the bounds, or show that a probe read stale hints.
@@ -99,6 +104,12 @@ function activate(context) {
   const scheduleProbe = () => {
     clearTimeout(probeTimer);
     probeTimer = setTimeout(probe, 500);
+  };
+
+  // The API has no event for a new editor width. A split or a closed group gives one; for the rest there is the command.
+  const fitTables = () => {
+    remeasure = true;
+    scheduleProbe();
   };
 
   const provider = {
@@ -119,6 +130,10 @@ function activate(context) {
     { dispose: () => cursorTypes.forEach((type) => type.dispose()) },
     { dispose: () => clearTimeout(probeTimer) },
     vscode.languages.registerInlayHintsProvider({ language: "markdown" }, provider),
+    vscode.commands.registerCommand("mdGhostAlign.fitTables", fitTables),
+    vscode.window.tabGroups.onDidChangeTabGroups((event) => {
+      if (event.opened.length > 0 || event.closed.length > 0) fitTables();
+    }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (!event.affectsConfiguration("editor")) return;
       refresh();
@@ -136,6 +151,9 @@ function activate(context) {
     }),
     // A new editor width changes how lines wrap, and so the lines in view.
     vscode.window.onDidChangeTextEditorVisibleRanges(scheduleProbe),
+    vscode.window.onDidChangeWindowState((state) => {
+      if (state.focused) scheduleProbe();
+    }),
     vscode.window.onDidChangeTextEditorSelection((event) => {
       if (event.textEditor.document.languageId !== "markdown" || probing) return;
       if (probeTimer) scheduleProbe();
@@ -188,6 +206,8 @@ async function probeWrapColumn(editor, pads) {
         await vscode.commands.executeCommand("cursorMove", { to: "wrappedLineEnd" });
         steps++;
         const end = editor.selection.active.character;
+        // The cursor command went to another editor (this one has no keyboard focus): nothing was read.
+        if (start === 0 && end === 0 && editor.selection.active.line === line) return undefined;
         if (editor.selection.active.line !== line || end <= start) break;
         wrapped ||= end < text.length;
         const { shown, place } = shownBreak(text, padsOf(line), end);
