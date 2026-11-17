@@ -1,5 +1,8 @@
 # Change Log
 
+## 0.2.3
+- Fix the editor jumping back a few lines after you scroll: the width measurement moved the cursor onto lines near the edge of the editor, and VS Code scrolled to keep sticky scroll lines (or `editor.cursorSurroundingLines`) around the cursor.
+
 ## 0.2.2
 - Fit tables to the window under `editor.wordWrap: "on"`: the extension measures the wrap column from where VS Code breaks prose lines in view, and rows with a long cell become a grid again.
 - Fix a table that fits the window but was cut to the longest line in view, so its long cells pushed their rows off the columns.

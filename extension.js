@@ -179,10 +179,13 @@ async function probeWrapColumn(editor, pads) {
   // With "indent" and "deepIndent", continuation lines get an indent the bounds do not count.
   if (!["none", "same"].includes(config.get("wrappingIndent"))) return undefined;
 
+  // A cursor move scrolls until this many lines sit between the cursor and the editor edge, sticky scroll lines
+  // included (VS Code 1.146 `_computeScrollTopToRevealRange`). The edge line itself can be cut off.
+  const stickyLines = config.get("stickyScroll.enabled") ? config.get("stickyScroll.maxLineCount") : 0;
+  const margin = 1 + Math.max(config.get("cursorSurroundingLines"), stickyLines);
   const lines = [];
   for (const range of editor.visibleRanges) {
-    // The edge lines of a range can be cut off, and a cursor move there would scroll the editor.
-    for (let line = range.start.line + 1; line < range.end.line; line++) {
+    for (let line = range.start.line + margin; line <= range.end.line - margin; line++) {
       if (canProbe(document.lineAt(line).text)) lines.push(line);
     }
   }
