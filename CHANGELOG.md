@@ -1,5 +1,8 @@
 # Change Log
 
+## 0.2.4
+- Fix the editor scrolling one or two characters to the right half a second after you scroll or type: the width measurement put the cursor at the right edge of a line, and VS Code scrolled sideways to show it when a row was wider than the editor.
+
 ## 0.2.3
 - Fix the editor jumping back a few lines after you scroll: the width measurement moved the cursor onto lines near the edge of the editor, and VS Code scrolled to keep sticky scroll lines (or `editor.cursorSurroundingLines`) around the cursor.
 
