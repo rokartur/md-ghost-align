@@ -226,6 +226,9 @@ async function probeWrapColumn(editor, pads) {
     }
   } finally {
     editor.selections = saved;
+    // cursorMove reveals a cursor at the right edge with 30 px to spare, so a row wider than the editor scrolls it
+    // sideways. Column 0 of a probed line scrolls it back, and that line is already far enough from the top and bottom.
+    if (steps > 0) editor.revealRange(new vscode.Range(lines[0], 0, lines[0], 0));
   }
   // The breaks disagree (another extension's inline text, or hints not drawn yet): they say nothing.
   if (min > max) return undefined;
